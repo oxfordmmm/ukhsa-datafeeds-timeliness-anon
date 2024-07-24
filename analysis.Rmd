@@ -1,0 +1,1168 @@
+---
+title: "Timeliness of UKHSA datafeeds for mandatory reporting of HCAIs"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(reactable)
+
+```
+
+```{r}
+# Load data
+
+monitor_results <- read_csv(
+  "./ukhsa_datafeeds_timeliness_anon.csv",
+  col_types = cols(
+    monitor_datetime = col_datetime(),
+    monitor_point_name = col_character(),
+    monitor_point_subname = col_character(),
+    stat_name = col_character(),
+    stat_type = col_character(),
+    columnname = col_character(),
+    groupby_colname = col_character(),
+    groupby_value = col_character(),
+    value = col_character(),
+    value_type = col_character(),
+    run_date = col_date()
+  )
+)
+
+```
+
+
+```{r}
+cat("Latest monitor date: ", format(max(monitor_results$monitor_datetime)))
+
+audit_dates <-
+  monitor_results %>%
+  mutate(audit_dates = substring(monitor_point_subname, nchar(monitor_point_subname) - 7)) %>%
+  distinct(audit_dates) %>%
+  arrange(audit_dates) %>%
+  pull()
+
+cat("audit_dates:", audit_dates)
+tibble(audit_dates = audit_dates,
+       followup_days = as.Date(max(monitor_results$monitor_datetime)) - lubridate::ymd(audit_dates))
+
+```
+
+```{r}
+stat_line_plot <- function(df, stat, audit_date){
+  g <- 
+    ggplot(data = df %>% filter(stat_name == stat),
+           aes(x = run_date, y = num_value)) +
+    scale_x_date(
+      limits = c(lubridate::ymd(audit_date), NA),
+      breaks = scales::breaks_pretty(),
+      labels = scales::label_date_short(sep = " "),
+    ) +
+    labs(x = "Monitor date",
+                  y = stat,
+                  title = NULL) +
+    theme_bw() +
+    geom_line()
+  
+  g
+}
+
+stat_threshold_table <- function(df, audit_date){
+  df %>%
+    group_by(stat_name) %>%
+    arrange(run_date) %>%
+    mutate(total = last(num_value),
+           perc = 100*num_value/total,
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date)),
+           days50 = min(dayspassed[perc >= 50]),
+           days90 = min(dayspassed[perc >= 90]),
+           days95 = min(dayspassed[perc >= 95]),
+           days99 = min(dayspassed[perc >= 99]),
+           ) %>%
+    slice(1) %>%
+    select(stat_name, total, days50, days90, days95, days99)
+}
+
+```
+
+```{r}
+# initialise htmlwidgets otherwise they won't render
+# this chunk can be placed anywhere
+dummy_df <- data.frame(a = as.Date("2023-01-01"), b = "item", c = 1)
+
+reactable(dummy_df, 
+          height = 0,
+          bordered = FALSE)
+```
+
+## SGSS {.tabset}
+
+Organisms included: o.Organism_Species_Name IN ('ESCHERICHIA COLI','STREPTOCOCCUS PNEUMONIAE','STAPHYLOCOCCUS AUREUS','KLEBSIELLA OXYTOCA','KLEBSIELLA PNEUMONIAE','KLEBSIELLA PNEUMONIAE SUBSP OZENAE','KLEBSIELLA PNEUMONIAE SUBSP PNEUMONIAE')
+		OR o.Organism_Genus_Name IN ('ENTEROCOCCUS','ACINETOBACTER','PSEUDOMONAS')
+
+```{r}
+sgss_by_organism <- function(monitor_results, record_type, audit_date){
+    monitor_results %>%
+    filter(monitor_point_name == "sgss_specdates") %>%
+    filter(monitor_point_subname == paste0(record_type, "_", audit_date)) %>%
+    filter(stat_name == "Specimens per organism") %>%
+    filter(run_date >= lubridate::ymd(audit_date)) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, stat_name, groupby_colname, organism = groupby_value, num_value) %>%
+    arrange(run_date)
+}
+
+sgss_data <- function(monitor_results, record_type, audit_date, stats){
+    monitor_results %>%
+    filter(monitor_point_name == "sgss_specdates") %>%
+    filter(monitor_point_subname == paste0(record_type, "_", audit_date)) %>%
+    filter(stat_name %in% stats) %>%
+    filter(run_date >= lubridate::ymd(audit_date)) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, stat_name, groupby_colname, groupby_value, num_value) %>%
+    arrange(run_date)
+}
+
+
+sgss_by_organism_plot <- function(df, audit_date){
+  legend_order <-
+    df %>%
+    group_by(organism) %>%
+    arrange(desc(run_date)) %>%
+    slice(1) %>%
+    arrange(desc(num_value)) %>%
+    pull(organism)
+
+  df$organism <- factor(df$organism, levels = legend_order)
+
+  minx <- lubridate::ymd(audit_date)
+  
+  g <- ggplot(data = df,
+              aes(x = run_date, y = num_value, group = organism)) +
+    scale_x_date(
+      limits = c(minx, NA),
+      breaks = scales::breaks_pretty(),
+      labels = scales::label_date_short(sep = " "),
+    ) +
+    labs(x = "Monitor date",
+         y = "No. of records") +
+    theme_bw() +
+    guides(color = guide_legend(title = "Organism")) +
+    theme(
+      legend.position = "inside",
+      legend.justification.inside = c(1, 0),
+      legend.position.inside = c(0.92, 0.2),
+      legend.background = element_rect(colour = "grey")
+    ) +
+    geom_line(aes(color = organism))
+  
+  g
+}
+
+sgss_by_organism_thresholds <- function(df, audit_date){
+  df %>%
+    group_by(organism) %>%
+    arrange(run_date) %>%
+    mutate(total = last(num_value),
+           perc = 100*num_value/total,
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date)),
+           days50 = min(dayspassed[perc >= 50]),
+           days90 = min(dayspassed[perc >= 90]),
+           days95 = min(dayspassed[perc >= 95]),
+           days99 = min(dayspassed[perc >= 99]),
+           ) %>%
+    slice(1) %>%
+    select(stat_name, organism, total, days50, days90, days95, days99)
+}
+
+```
+
+
+
+### CDR {.tabset}
+
+#### By specimen {.tabset}
+
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sgss_by_organism(monitor_results, "cdr_opiedate", audit_date)
+  
+  sgss_by_organism_plot(df, audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- sgss_by_organism_thresholds(df, audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+#### Labs {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  labsdf <- sgss_data(monitor_results, "cdr_opiedate", audit_date, "No. of Labs")
+  
+  stat_line_plot(labsdf, stat = "No. of Labs", audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- stat_threshold_table(labsdf, audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+### AMR {.tabset}
+
+
+#### By specimen {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sgss_by_organism(monitor_results, "amr_specdate", audit_date)
+  
+  sgss_by_organism_plot(df, audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- sgss_by_organism_thresholds(df, audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+#### Labs {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  labsdf <- sgss_data(monitor_results, "amr_specdate", audit_date, "No. of Labs")
+  
+  stat_line_plot(labsdf, stat = "No. of Labs", audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- stat_threshold_table(labsdf, audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+## SUS+ {.tabset}
+
+```{r}
+sus_apc_data <- function(monitor_results, audit_date){
+  monitor_results %>%
+    filter(monitor_point_name == "sus_dates") %>%
+    filter(monitor_point_subname == paste0("apc_adm_date_", audit_date)) %>%
+    filter(stat_name %in% c("Total admissions", "Total discharged", "Total with diagcodes", "No. of Providers")) %>%
+    filter(run_date >= lubridate::ymd(audit_date)) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, stat_name, num_value)
+}
+
+sus_ecds_data <- function(monitor_results, audit_date){
+  monitor_results %>%
+    filter(monitor_point_name == "sus_dates") %>%
+    filter(monitor_point_subname == paste0("ecds_arr_date_", audit_date)) %>%
+    filter(stat_name %in% c("Total arrivals", "No. of Providers")) %>%
+    filter(run_date >= lubridate::ymd(audit_date)) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, stat_name, num_value)
+}
+
+
+sus_apc_episodes_plot <- function(df, audit_date){
+  plotdata <- df %>%
+    filter(stat_name %in% c("Total admissions", "Total discharged", "Total with diagcodes")) %>%
+    mutate(record_type = factor(stat_name, 
+                                levels = c("Total admissions", 
+                                           "Total discharged", 
+                                           "Total with diagcodes"),
+                                labels = c("Admitted, no dischargedate/diagcodes", 
+                                           "Discharged, no diagcodes", 
+                                           "Discharged, with diagcodes"))
+           )
+
+  g <- ggplot(data = plotdata, 
+              aes(x = run_date, y = num_value, fill = record_type)) +
+  		scale_x_date(
+  		  limits = c(lubridate::ymd(audit_date), NA),
+  			breaks = scales::breaks_pretty(),
+  			labels = scales::label_date_short(sep = " "),
+  		) +
+  		labs(
+  			x = "Monitor date",
+  			y = "No. of records",
+  			title = NULL
+  		) +
+    theme_bw() +
+    theme(
+      legend.position = "inside",
+      legend.justification.inside = c(1, 0),
+      legend.position.inside = c(0.92, 0.3),
+      legend.background = element_rect(colour = "grey")
+    ) +
+    guides(fill = guide_legend(title = "Record type", direction = "vertical")) +
+    scale_fill_viridis_d() +
+    geom_area(position = "identity")
+  
+  g
+}
+
+```
+
+### APC totals {.tabset} 
+
+#### Records {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sus_apc_data(monitor_results, audit_date)
+  
+  sus_apc_episodes_plot(df, audit_date) %>%
+    print()
+  
+  cat("\n")
+    
+  thresholds <- stat_threshold_table(df %>%
+                                       filter(stat_name != "No. of Providers"),
+                                     audit_date) %>%
+    reactable()
+    
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+#### Providers {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sus_apc_data(monitor_results, audit_date)
+  
+  stat_line_plot(df, "No. of Providers", audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- stat_threshold_table(df %>%
+                                       filter(stat_name == "No. of Providers"),
+                                     audit_date) %>%
+    reactable()
+    
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+### ECDS totals {.tabset}
+
+#### Records {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sus_ecds_data(monitor_results, audit_date)
+  
+  stat_line_plot(df, "Total arrivals", audit_date) %>%
+    print()
+  
+  cat("\n")
+    
+  thresholds <- stat_threshold_table(df %>%
+                       filter(stat_name == "Total arrivals"),
+                       audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+#### Providers {.tabset}
+
+```{r, results='asis'}
+
+for (audit_date in audit_dates) {
+  cat("\n#####", audit_date, "\n\n")
+  
+  df <- sus_ecds_data(monitor_results, audit_date)
+  
+  stat_line_plot(df, "No. of Providers", audit_date) %>%
+    print()
+  
+  cat("\n")
+  
+  thresholds <- stat_threshold_table(df %>%
+                       filter(stat_name == "No. of Providers"),
+                       audit_date) %>%
+    reactable()
+  
+  # NOTE: a regular print() doesn't render the widget
+  cat(knitr::knit_print(thresholds))
+  
+  cat("\n")
+}
+
+```
+
+
+
+## Summary {.tabset}
+
+
+### No. of SGSS records on each audit date {.tabset}
+
+#### All organisms
+
+```{r}
+summary_results <-
+  monitor_results %>%
+    filter(monitor_point_name == "sgss_specdates") %>%
+    filter(substr(monitor_point_subname, 1, 12) %in% c("cdr_opiedate", "amr_specdate")) %>%
+    mutate(source = toupper(substr(monitor_point_subname, 1, 3)),
+           audit_date = substr(monitor_point_subname, 14, 21)) %>%
+    filter(stat_name == "Specimens per organism") %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    group_by(source, audit_date, run_date) %>%
+    summarise(num_value = sum(num_value),
+              .groups = "drop") %>%
+    select(run_date, source, audit_date, num_value) %>%
+    group_by(source, audit_date) %>%
+    arrange(run_date) %>%
+    mutate(total = last(num_value),
+           perc = 100*num_value/total,
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date)),
+           days50 = min(dayspassed[perc >= 50]),
+           days90 = min(dayspassed[perc >= 90]),
+           days95 = min(dayspassed[perc >= 95]),
+           days99 = min(dayspassed[perc >= 99]),
+           ) %>%
+    slice(1) %>%
+    select(source, audit_date, total, days50, days90, days95, days99) %>%
+    arrange(source, audit_date) 
+
+summary_results %>%
+  reactable::reactable(filterable = TRUE)
+
+```
+
+```{r}
+summary_results %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(source, " - ", name)) %>%
+  ggplot(aes(x = factor(category, levels = paste0(
+                          c(
+                            rep("CDR", 4), 
+                            rep("AMR", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 2))
+                        ),
+             y = count, fill = source)) +
+		labs(
+			x = "Percentile of records received",
+			y = "No. of days after specimen date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  theme_bw() +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 3)
+
+```
+
+#### By organism
+
+```{r}
+summary_results_by_organism <-
+  monitor_results %>%
+    filter(monitor_point_name == "sgss_specdates") %>%
+    filter(substr(monitor_point_subname, 1, 12) %in% c("cdr_opiedate", "amr_specdate")) %>%
+    mutate(source = toupper(substr(monitor_point_subname, 1, 3)),
+           audit_date = substr(monitor_point_subname, 14, 21)) %>%
+    filter(stat_name == "Specimens per organism") %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, source, audit_date, organism = groupby_value, num_value) %>%
+    group_by(source, organism, audit_date) %>%
+    arrange(run_date) %>%
+    mutate(total = last(num_value),
+           perc = 100*num_value/total,
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date)),
+           days50 = min(dayspassed[perc >= 50]),
+           days90 = min(dayspassed[perc >= 90]),
+           days95 = min(dayspassed[perc >= 95]),
+           days99 = min(dayspassed[perc >= 99]),
+           ) %>%
+    slice(1) %>%
+    select(source, audit_date, organism, total, days50, days90, days95, days99) %>%
+    arrange(source, organism, audit_date)
+```
+
+```{r}
+summary_results_by_organism %>%
+    reactable::reactable(filterable = TRUE)
+
+```
+
+
+### No. of labs on each audit date {.tabset}
+
+```{r}
+summary_labs <-
+  monitor_results %>%
+    filter(monitor_point_name == "sgss_specdates") %>%
+    filter(substr(monitor_point_subname, 1, 12) %in% c("cdr_opiedate", "amr_specdate")) %>%
+    mutate(source = toupper(substr(monitor_point_subname, 1, 3)),
+           audit_date = substr(monitor_point_subname, 14, 21)) %>%
+    filter(stat_name == "Specimens per lab") %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, audit_date, source, labname = groupby_value, num_value) %>%
+    group_by(source, labname, audit_date) %>%
+    arrange(run_date) %>%
+    mutate(new_records = num_value - lag(num_value) > 0 | (row_number() == 1 & num_value > 0),
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date))) %>%
+    filter(new_records) %>%
+    group_by(source, labname, audit_date) %>%
+    summarise(lastrecord = max(dayspassed),
+              firstrecord = min(dayspassed),
+              .groups = "drop")
+
+```
+
+#### Total no. of labs
+
+```{r}
+summary_labs %>%
+  group_by(source) %>%
+  summarise(n_distinct(labname))
+
+```
+
+#### Longest record to arrive
+
+
+```{r}
+summary_labs %>%
+  group_by(source) %>%
+  summarise(maxfirstrecord = max(firstrecord),
+            maxlastrecord = max(lastrecord),
+            .groups = "drop")
+
+```
+
+#### First records
+
+
+```{r}
+summary_labs_firstrecord <-
+  summary_labs %>%
+    group_by(source, audit_date) %>%
+    summarise(total = n_distinct(labname),
+           days50 = quantile(firstrecord, 0.5, type = 1),
+           days90 = quantile(firstrecord, 0.90, type = 1),
+           days95 = quantile(firstrecord, 0.95, type = 1),
+           days99 = quantile(firstrecord, 0.99, type = 1),
+           .groups = "drop"
+           )
+```
+
+
+```{r}
+summary_labs_firstrecord %>%
+  reactable::reactable(filterable = TRUE)
+```
+
+
+```{r}
+summary_labs_firstrecord %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(source, "_", name)) %>%
+  ggplot(aes(x = factor(category), y = count, fill = source)) +
+		labs(
+			x = "Percentile of labs sent first record",
+			y = "No. of days after specimen date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  theme_bw() +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 3)
+
+```
+
+#### Last records
+
+```{r}
+summary_labs_lastrecord <-
+  summary_labs %>%
+    group_by(source, audit_date) %>%
+    summarise(total = n_distinct(labname),
+           days50 = quantile(lastrecord, 0.5, type = 1),
+           days90 = quantile(lastrecord, 0.90, type = 1),
+           days95 = quantile(lastrecord, 0.95, type = 1),
+           days99 = quantile(lastrecord, 0.99, type = 1),
+           .groups = "drop"
+           )
+```
+
+
+```{r}
+summary_labs_lastrecord %>%
+  reactable::reactable(filterable = TRUE)
+```
+
+
+```{r}
+summary_labs_lastrecord %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(source, "_", name)) %>%
+  ggplot(aes(x = factor(category), y = count, fill = source)) +
+		labs(
+			x = "Percentile of labs sent last record",
+			y = "No. of days after specimen date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  theme_bw() +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 7)
+
+```
+
+#### First and last records
+
+
+```{r}
+summary_labs_firstlast_record <-
+  rbind(tibble(summary_labs_firstrecord, record_position = "first"),
+        tibble(summary_labs_lastrecord, record_position = "last"))
+```
+
+
+```{r}
+summary_labs_firstlast_record %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(record_position, " - ", source, " - ", name)) %>%
+  ggplot(aes(x = factor(category,
+                        levels = paste0(
+                          c(
+                            rep("first - ", 4),
+                            rep("last - ", 4)
+                            ),
+                          c(
+                            rep("CDR", 8), 
+                            rep("AMR", 8)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("First ", 4),
+                            rep("Last ", 4)
+                            ),
+                          c(rep("CDR record", 8), 
+                            rep("AMR record", 8)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ),
+             y = count, fill = source)) +
+		labs(
+			x = "Percentile of labs submitting records",
+			y = "No. of days after specimen date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 7)
+
+
+```
+
+
+### No. of SUS+ records on each audit date {.tabset}
+
+#### ECDS disruption
+
+audit dates after 20230824 have majority of records loaded on a single day, and have a spurious date (2023-09-08) with too many records 
+
+```{r}
+monitor_results %>%
+  filter(monitor_point_name == "sus_dates") %>%
+  filter(substr(monitor_point_subname, 1, 13) %in% c("ecds_arr_date")) %>%
+  mutate(audit_date = substr(monitor_point_subname, regexpr(pattern = "date_", monitor_point_subname) + 5, 22)) %>%
+  filter(stat_name %in% c("Total arrivals")) %>%
+  filter(!is.na(value)) %>%
+  mutate("num_value" = as.numeric(value)) %>%
+  select(audit_date, run_date, subtype = stat_name, num_value) %>%
+  group_by(subtype, audit_date) %>%
+  arrange(run_date) %>%
+reactable::reactable(filterable = TRUE)
+
+```
+
+#### By subtype
+
+(After removing spurious ECDS loading date)
+
+```{r}
+summary_results_by_subtype <-
+  monitor_results %>%
+    filter(monitor_point_name == "sus_dates") %>%
+    filter(substr(monitor_point_subname, 1, 13) %in% c("ecds_arr_date", "apc_adm_date_")) %>%
+    mutate(source = toupper(substr(monitor_point_subname, 1, regexpr(pattern = "_", monitor_point_subname) - 1)),
+           audit_date = substr(monitor_point_subname, regexpr(pattern = "date_", monitor_point_subname) + 5, 22)) %>%
+    filter(!(stat_name == "Total arrivals" & run_date == as.Date("2023-09-08"))) %>% # spurious excess loading of ecds data
+    filter(stat_name %in% c("Total admissions", "Total discharged", "Total with diagcodes", "Total arrivals")) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, source, audit_date, stat_name, num_value) %>%
+    group_by(source, stat_name, audit_date) %>%
+    arrange(run_date) %>%
+    mutate(total = last(num_value),
+           perc = 100*num_value/total,
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date)),
+           days50 = min(dayspassed[perc >= 50]),
+           days90 = min(dayspassed[perc >= 90]),
+           days95 = min(dayspassed[perc >= 95]),
+           days99 = min(dayspassed[perc >= 99]),
+           ) %>%
+    slice(1) %>%
+    select(source, audit_date, stat_name, total, days50, days90, days95, days99) %>%
+    arrange(source, stat_name, audit_date)
+```
+
+```{r}
+summary_results_by_subtype %>%
+    reactable::reactable(filterable = TRUE)
+
+```
+
+```{r}
+summary_results_by_subtype %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(stat_name, " - ", name),
+         loading = case_when(audit_date %in% c("20230819","20230824","20230829","20230901") ~ "Disrupted",
+                                     TRUE ~ "Undisrupted")) %>%
+  ggplot(aes(x = factor(category, 
+                        levels = paste0(
+                          c(
+                            rep("Total admissions", 4), 
+                            rep("Total discharged", 4), 
+                            rep("Total with diagcodes", 4), 
+                            rep("Total arrivals", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("Admisions", 4), 
+                            rep("Discharged", 4), 
+                            rep("Discharged + diagcodes", 4), 
+                            rep("ED Arrivals", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ), 
+             y = count, fill = source, color = loading)) +
+		labs(
+			x = "Percentile of records received",
+			y = "No. of days after adm/arr date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_color_manual(values = c("orange", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 4)
+
+```
+
+
+
+
+### No. of providers on each audit date {.tabset}
+
+```{r}
+summary_providers <-
+  monitor_results %>%
+    filter(monitor_point_name == "sus_dates") %>%
+    filter(substr(monitor_point_subname, 1, 13) %in% c("ecds_arr_date", "apc_adm_date_")) %>%
+    mutate(source = toupper(substr(monitor_point_subname, 1, regexpr(pattern = "_", monitor_point_subname) - 1)),
+           audit_date = substr(monitor_point_subname, regexpr(pattern = "date_", monitor_point_subname) + 5, 22)) %>%
+    filter(!(stat_name == "Arrivals per Provider" & run_date == as.Date("2023-09-08"))) %>% # spurious excess loading of ecds data
+    filter(stat_name %in% c("Admissions per Provider", "Discharged per Provider", "Diags present per Provider", "Arrivals per Provider")) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(run_date, audit_date, source, stat_name, provider = groupby_value, num_value) %>%
+    group_by(source, stat_name, provider, audit_date) %>%
+    arrange(run_date) %>%
+    mutate(new_records = num_value - lag(num_value) > 0 | (row_number() == 1 & num_value > 0),
+           dayspassed = as.integer(run_date - lubridate::ymd(audit_date))) %>%
+    filter(new_records) %>%
+    group_by(source, stat_name, provider, audit_date) %>%
+    summarise(lastrecord = max(dayspassed),
+              firstrecord = min(dayspassed),
+              .groups = "drop") 
+
+```
+
+#### Total no. of providers
+
+```{r}
+summary_providers %>%
+  group_by(source) %>%
+  summarise(n_distinct(provider))
+
+```
+
+#### Longest record to arrive
+
+
+```{r}
+summary_providers %>%
+  group_by(source, stat_name) %>%
+  summarise(maxfirstrecord = max(firstrecord),
+            maxlastrecord = max(lastrecord),
+            .groups = "drop")
+
+```
+
+
+#### First records
+
+```{r}
+summary_providers_firstrecord <-
+  summary_providers %>%
+    group_by(source, stat_name, audit_date) %>%
+    summarise(total = n_distinct(provider),
+           days50 = quantile(firstrecord, 0.5, type = 1),
+           days90 = quantile(firstrecord, 0.90, type = 1),
+           days95 = quantile(firstrecord, 0.95, type = 1),
+           days99 = quantile(firstrecord, 0.99, type = 1),
+           .groups = "drop"
+           )
+
+```
+
+
+```{r}
+summary_providers_firstrecord %>%
+  reactable::reactable(filterable = TRUE)
+```
+
+
+```{r}
+summary_providers_firstrecord %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(stat_name, " - ", name),
+         loading = case_when(audit_date %in% c("20230819","20230824","20230829","20230901") ~ "Disrupted",
+                                     TRUE ~ "Undisrupted")) %>%
+  ggplot(aes(x = factor(category, 
+                        levels = paste0(
+                          c(
+                            rep("Admissions per Provider", 4), 
+                            rep("Discharged per Provider", 4), 
+                            rep("Diags present per Provider", 4), 
+                            rep("Arrivals per Provider", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("Admisions", 4), 
+                            rep("Discharged", 4), 
+                            rep("Discharged + diagcodes", 4), 
+                            rep("ED Arrivals", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ), 
+             y = count, fill = source, color = loading)) +
+		labs(
+			x = "Percentile of providers sent first record",
+			y = "No. of days after adm/arr date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_color_manual(values = c("orange", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 5)
+
+```
+
+#### Last records
+
+```{r}
+summary_providers_lastrecord <-
+  summary_providers %>%
+    group_by(source, stat_name, audit_date) %>%
+    summarise(total = n_distinct(provider),
+           days50 = quantile(lastrecord, 0.5, type = 1),
+           days90 = quantile(lastrecord, 0.90, type = 1),
+           days95 = quantile(lastrecord, 0.95, type = 1),
+           days99 = quantile(lastrecord, 0.99, type = 1),
+           .groups = "drop"
+           )
+
+```
+
+
+```{r}
+summary_providers_lastrecord %>%
+  reactable::reactable(filterable = TRUE)
+```
+
+
+```{r}
+summary_providers_lastrecord %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(stat_name, " - ", name),
+         loading = case_when(audit_date %in% c("20230819","20230824","20230829","20230901") ~ "Disrupted",
+                                     TRUE ~ "Undisrupted")) %>%
+  ggplot(aes(x = factor(category, 
+                        levels = paste0(
+                          c(
+                            rep("Admissions per Provider", 4), 
+                            rep("Discharged per Provider", 4), 
+                            rep("Diags present per Provider", 4), 
+                            rep("Arrivals per Provider", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("Admisions", 4), 
+                            rep("Discharged", 4), 
+                            rep("Discharged + diagcodes", 4), 
+                            rep("ED Arrivals", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ), 
+             y = count, fill = source, color = loading)) +
+		labs(
+			x = "Percentile of providers sent last record",
+			y = "No. of days after adm/arr date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_color_manual(values = c("orange", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 8)
+
+```
+
+#### First and last records
+
+
+```{r}
+summary_providers_firstlast_record <-
+  rbind(tibble(summary_providers_firstrecord, record_position = "first"),
+        tibble(summary_providers_lastrecord, record_position = "last"))
+```
+
+
+```{r}
+summary_providers_firstlast_record %>%
+  filter(stat_name %in% c("Admissions per Provider", "Arrivals per Provider")) %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(record_position, " - ", stat_name, " - ", name),
+         loading = case_when(audit_date %in% c("20230819","20230824","20230829","20230901") ~ "Disrupted",
+                                     TRUE ~ "Undisrupted")) %>%
+  ggplot(aes(x = factor(category, 
+                        levels = paste0(
+                          c(
+                            rep("first - ", 4),
+                            rep("last - ", 4)
+                            ),
+                          c(
+                            rep("Admissions per Provider", 8), 
+                            rep("Arrivals per Provider", 8)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("First ", 4),
+                            rep("Last ", 4)
+                            ),
+                          c(rep("Admission record", 8), 
+                            rep("Arrival record", 8)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ), 
+             y = count, fill = source, color = loading)) +
+		labs(
+			x = "Percentile of providers submitting records",
+			y = "No. of days after adm/arr date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_color_manual(values = c("orange", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 8)
+
+
+```
+
+
+#### Records submitted without a disdate/diagcodes {.tabset}
+
+This explains the similarity between APC subtypes
+
+```{r}
+summary_apc_subtype_differences <-
+  monitor_results %>%
+    filter(monitor_point_name == "sus_dates") %>%
+    filter(substr(monitor_point_subname, 1, 13) %in% c( "apc_adm_date_")) %>%
+    mutate(audit_date = substr(monitor_point_subname, regexpr(pattern = "date_", monitor_point_subname) + 5, 22)) %>%
+    filter(stat_name %in% c("Admissions per Provider", "Discharged per Provider", "Diags present per Provider")) %>%
+    filter(!is.na(value)) %>%
+    mutate("num_value" = as.numeric(value)) %>%
+    select(audit_date, run_date, stat_name, provider = groupby_value, num_value) %>%
+    pivot_wider(names_from = stat_name, values_from = num_value) %>%
+    mutate(no_disdate = `Admissions per Provider` - `Discharged per Provider`,
+           disdate_no_diags = `Discharged per Provider` - `Diags present per Provider`,
+           adm_no_diags = `Admissions per Provider` - `Diags present per Provider`)
+
+```
+
+##### Summary (first monitor date)
+
+```{r}
+summary_apc_subtype_differences %>%
+  group_by(provider, audit_date) %>%
+  arrange(run_date) %>%
+  slice(1) %>%
+  group_by(audit_date) %>%
+  summarise(n_providers = n(),
+            n_all_disdates_present = sum(no_disdate == 0),
+            p_all_disdates_present = round(n_all_disdates_present/n_providers*100),
+            n_all_diags_present_when_disdate_present = sum(disdate_no_diags == 0),
+            n_all_diags_present = sum(adm_no_diags == 0),
+            p_all_diags_present = round(n_all_diags_present/n_providers*100)
+            ) %>%
+  reactable::reactable()
+  
+```
+
+
+```{r}
+summary_providers_firstrecord %>%
+  filter(source != "ECDS") %>%
+  pivot_longer(cols = starts_with("days"),
+               names_prefix = "days",
+               values_to = "count") %>%
+  mutate(category = paste0(stat_name, " - ", name),
+         loading = case_when(audit_date %in% c("20230819","20230824","20230829","20230901") ~ "Disrupted",
+                                     TRUE ~ "Undisrupted")) %>%
+  ggplot(aes(x = factor(category, 
+                        levels = paste0(
+                          c(
+                            rep("Admissions per Provider", 4), 
+                            rep("Discharged per Provider", 4), 
+                            rep("Diags present per Provider", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        labels = paste0(
+                          c(
+                            rep("Admisions", 4), 
+                            rep("Discharged", 4), 
+                            rep("Discharged + diagcodes", 4)
+                            ), 
+                          rep(c(" - 50", " - 90", " - 95", " - 99"), 4)),
+                        ), 
+             y = count, fill = source, color = loading)) +
+		labs(
+			x = "Percentile of providers sent first record",
+			y = "No. of days after adm/arr date"
+			) +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_color_manual(values = c("orange", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_dotplot(binaxis = "y", stackdir = "center", binwidth = 5)
+
+```
+
