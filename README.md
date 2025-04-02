@@ -1,7 +1,7 @@
 # Timeliness of UKHSA datafeeds for mandatory reporting of HCAIs
 
 
-This repo contains the `rmarkdown` code plus the knitted html file containing the analysis results used for the journal article "Understanding the timeliness of automated data feeds is important for determining their usability for large-scale surveillance of healthcare-associated infections". The data used for the analysis is hosted separately in [Zenodo](https://zenodo.org/doi/10.5281/zenodo.12805820).
+This repo contains the `rmarkdown` code plus the knitted html file containing the analysis results used for the journal article "Timeliness of a potential automated system for national surveillance of healthcare-associated infections in England". The data used for the analysis is hosted separately in [Zenodo](https://zenodo.org/doi/10.5281/zenodo.12805820).
 All names of laboratories and health providers have been anonymised.
 
 

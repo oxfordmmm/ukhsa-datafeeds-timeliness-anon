@@ -1166,3 +1166,185 @@ summary_providers_firstrecord %>%
 
 ```
 
+## Revisions {.tabset}
+
+### Figure 1
+
+```{r, fig.height=6, fig.width=6}
+summary_results_combined <-
+  bind_rows(
+    bind_rows(
+      summary_results %>%
+        mutate(record_position = "total"),
+      summary_labs_firstlast_record
+    ) %>%
+      mutate(
+        type = "SGSS",
+        stat_name = source,
+        loading = "Undisrupted"
+      ),
+    bind_rows(
+      summary_results_by_subtype %>%
+        mutate(record_position = "total"),
+      summary_providers_firstlast_record
+    ) %>%
+      mutate(
+        type = source,
+        loading = case_when(
+          audit_date %in% c("20230819", "20230824", "20230829", "20230901") ~ "Disrupted",
+          TRUE ~ "Undisrupted"
+        )
+      )
+  ) %>%
+    select(-days95) %>%
+    pivot_longer(
+      cols = starts_with("days"),
+      names_prefix = "days",
+      values_to = "count",
+      names_to = "perc"
+    ) %>%
+    mutate(
+      category = paste(record_position, perc),
+      label = factor(
+        stat_name,
+        levels = c(
+          "CDR",
+          "AMR",
+          "Arrivals per Provider",
+          "Admissions per Provider",
+          "Discharged per Provider",
+          "Diags present per Provider",
+          "Total arrivals",
+          "Total admissions",
+          "Total discharged",
+          "Total with diagcodes"
+        ),
+        labels = c(
+          "Infection episode",
+          "Susceptibility result",
+          "Emergency department attendance",
+          "Inpatient admission",
+          "Inpatient discharge",
+          "Inpatient diagnosis codes",
+          "Emergency department attendance",
+          "Inpatient admission",
+          "Inpatient discharge",
+          "Inpatient diagnosis codes"
+        )
+      )
+    ) %>%
+  ungroup()
+
+summary_results_combined %>%
+  ggplot(aes(
+    x = factor(
+      category,
+      levels = paste(
+        rep(c("total", "first", "last"), 3),
+        c(
+        rep("50", 3),
+        rep("90", 3),
+        rep("99", 3)
+      )),
+      labels = paste(
+        rep(c("", "First record from\n", "Last record from\n"), 3),
+        c(
+        rep("50%", 3),
+        rep("90%", 3),
+        rep("99%", 3)
+        ),
+        rep(c("of total records", "of organisations", "of organisations"), 3)
+    )),
+    y = count,
+    group = label,
+    fill = label,
+  )) +
+  labs(x = "Measures of records received per activity date",
+       y = "No. of days after activity date") +
+  scale_y_continuous(breaks = seq(0, 510, by = 30)) +
+  scale_fill_manual(values = c("orange", "brown", "white", "lightblue", "blue", "darkblue")) +
+  #  scale_color_manual(values = c("cyan", "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  ),
+  panel.grid.major.x = element_blank()) +
+  geom_vline(xintercept = c(1.5, 2.5, 4.5, 5.5, 7.5, 8.5),
+             linetype = "dotted",
+             colour = "grey") +
+  geom_vline(xintercept = c(3.5, 6.5),
+             linetype = "solid",
+             colour = "grey") +
+  guides(fill = guide_legend(
+    title = "Record type",
+    nrow = 3,
+    direction = "vertical"
+  )) +
+  theme(
+    legend.position = "inside",
+    legend.justification.inside = c(1, 0),
+    legend.position.inside = c(0.81, 0.7),
+    legend.background = element_rect(colour = "grey")
+  ) +
+  geom_point(shape = 21,
+             position = position_dodge(width = 0.7))
+
+```
+
+### Figure S1A
+
+```{r}
+ad <- audit_dates[1]
+
+df <- sgss_data(monitor_results, "cdr_opiedate", ad, "Total specimens")
+
+stat_line_plot(df, stat = "Total specimens", ad) +
+  ylab("No. of records")
+
+```
+
+### Ranges
+
+```{r}
+
+summary_results_combined %>%
+  group_by(type, category) %>%
+  summarise(mindays = min(count),
+            maxdays = max(count),
+            .groups = "drop") %>%
+  reactable(filterable = TRUE)
+  
+```
+
+### Table S1
+
+```{r}
+summary_results_combined %>%
+  mutate(
+    audit_date = paste(substr(audit_date, 1, 4), substr(audit_date, 5, 6), substr(audit_date, 7, 8),
+                       sep = "-"),
+    "Measure" = case_when(
+      record_position == "total" ~ paste0(perc, '% of total records'),
+      record_position == "first" ~ paste0("First record from ",
+                                          perc, "% of organisations"),
+      record_position == "last" ~ paste0("Last record from ",
+                                         perc, "% of organisations")
+    )
+  ) %>%
+  arrange(
+    audit_date,
+    label,
+    Measure
+  ) %>%
+  select(
+    "Activity date" = audit_date,
+    "Record type" = label,
+    Measure,
+    "Days" = count
+  ) %>%
+  knitr::kable(format = "simple")
+
+```
+
